@@ -1,0 +1,22 @@
+# Environment secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Dependencies and build output
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+
+# Cookies and temporary test data
+*cookies*.txt
+admin_register.json
+register_payload.json
+temp_*.mjs
+temp_*.js
+
+# ZIP backups
+*.zip

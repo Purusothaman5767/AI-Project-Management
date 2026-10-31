@@ -10,9 +10,11 @@ import {
   Menu,
   X,
   Sparkles,
+  LogOut,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { removeAccessToken } from "@/lib/apiClient";
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -33,8 +35,23 @@ export function AppShell({
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const routerState = useRouterState();
+  const pathname = routerState?.location?.pathname ?? "";
   const [open, setOpen] = useState(false);
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const [user, setUser] = useState<{ name?: string; email?: string; role?: string } | null>(null);
+
+  const isLead = user?.role
+    ? ["TEAM_LEAD", "PROJECT_MANAGER", "ADMIN"].includes(user.role.toUpperCase())
+    : false;
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("user");
+      if (raw) setUser(JSON.parse(raw));
+    } catch (_) {
+      setUser(null);
+    }
+  }, []);
 
   const SidebarBody = (
     <div className="flex h-full flex-col gap-6 p-4">
@@ -83,6 +100,20 @@ export function AppShell({
           Ask the assistant →
         </Link>
       </div>
+
+      {user && (
+        <div className="flex items-center gap-2.5 rounded-xl border border-sidebar-border bg-card/60 p-2.5">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+            {user?.name ? user.name.split(/\s+/).map((s: string) => s[0]).join('').slice(0, 2).toUpperCase() : "PM"}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-semibold text-foreground">{user.name}</p>
+            <p className="truncate text-[10px] text-muted-foreground">
+              {isLead ? "👑 Team Lead" : "👤 Team Member"}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -133,9 +164,38 @@ export function AppShell({
             <Bell className="size-5" />
             <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary" />
           </button>
-          <div className="flex size-9 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
-            SC
+          {user && (
+            <span
+              className={cn(
+                "hidden sm:inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold",
+                isLead
+                  ? "border border-primary/40 bg-primary/10 text-primary"
+                  : "border border-border bg-muted/70 text-muted-foreground"
+              )}
+              title={`Logged in as ${isLead ? "Team Lead" : "Team Member"}`}
+            >
+              <span>{isLead ? "👑" : "👤"}</span>
+              <span>{isLead ? "Team Lead" : "Team Member"}</span>
+            </span>
+          )}
+          <div className="flex size-9 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground" title={user?.name || "User"}>
+            {user?.name ? user.name.split(/\s+/).map((s: string) => s[0]).join('').slice(0, 2).toUpperCase() : "PM"}
           </div>
+          <button
+            onClick={async () => {
+              try {
+                await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+              } catch (_) {}
+              removeAccessToken();
+              localStorage.removeItem("user");
+              window.location.href = "/";
+            }}
+            title="Sign out"
+            aria-label="Sign out"
+            className="rounded-lg p-2 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
+          >
+            <LogOut className="size-5" />
+          </button>
         </header>
 
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6 md:px-6 md:py-8">{children}</main>

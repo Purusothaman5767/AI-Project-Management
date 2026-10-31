@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Bot, Send, User } from "lucide-react";
+import { AlertCircle, Bot, Send, User } from "lucide-react";
 import { AppShell } from "@/components/app-shell";
 import { Card } from "@/components/ui-bits";
+import { askAssistant, AssistantApiError, AssistantChatMessage } from "@/lib/apiClient";
 
 export const Route = createFileRoute("/assistant")({
   head: () => ({
@@ -16,7 +17,13 @@ export const Route = createFileRoute("/assistant")({
   component: Assistant,
 });
 
-type Msg = { id: string; role: "user" | "assistant"; text: string };
+type Msg = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  isError?: boolean | undefined;
+  errorCode?: string | undefined;
+};
 
 const suggestions = [
   "Which projects are at risk?",
@@ -25,40 +32,12 @@ const suggestions = [
   "Is the workload balanced?",
 ];
 
-const replies: { match: string[]; text: string }[] = [
-  {
-    match: ["risk", "danger", "problem", "alert"],
-    text: "2 projects look risky right now:\n\n• Billing Revamp — 41% complete with 20 days left and a blocked critical task (“Proration calculation service”). Risk: high.\n• Compliance Audit — paused 4 days pending legal review, and “Access review evidence” is already overdue. Risk: medium-high.\n\nInsights Dashboard is healthy at 88% and should land early.",
-  },
-  {
-    match: ["deadline", "predict", "late", "when", "ship"],
-    text: "Deadline prediction based on current velocity:\n\n• Insights Dashboard — Aug 13 (2 days early)\n• Atlas Mobile App — Sep 15 (3 days late)\n• Billing Revamp — Sep 6 (9 days late)\n• Vendor Portal — Oct 20 (on track, low confidence: scope still forming)\n\nBiggest lever: unblocking proration work this week pulls Billing Revamp back by ~5 days.",
-  },
-  {
-    match: ["priorit", "focus", "next", "important"],
-    text: "Suggested priority order for this week:\n\n1. Access review evidence (Critical, overdue) — Marcus Reid\n2. Proration calculation service (Critical, due Aug 6) — Lina Ortega\n3. Dunning email regression pass (High, due Aug 2) — Marcus Reid\n4. Implement offline sync queue (High, due Aug 11) — Noah Patel\n\nEverything below priority 4 can safely slip a sprint.",
-  },
-  {
-    match: ["workload", "capacity", "busy", "balance", "team"],
-    text: "Workload check:\n\n• Noah Patel — 94% (overloaded, 9 tasks)\n• Ava Mercer — 82%\n• Sofia Chen — 73%\n• Lina Ortega — 61%\n• Marcus Reid — 45%\n• Ibrahim Kone — 38%\n\nSuggestion: move “Push notification permissions” from Noah to Ibrahim, and “Invoice PDF template” from Ava to Marcus. That brings the team spread from 56 points to 34.",
-  },
-];
-
-function dummyReply(input: string) {
-  const q = input.toLowerCase();
-  const hit = replies.find((r) => r.match.some((m) => q.includes(m)));
-  return (
-    hit?.text ??
-    "Here's what I see across the workspace: 6 projects, 1 completed, 3 tasks overdue and one team member above 90% capacity. Ask me about project risk, deadline predictions, task priorities or workload balancing."
-  );
-}
-
 function Assistant() {
   const [messages, setMessages] = useState<Msg[]>([
     {
       id: "m0",
       role: "assistant",
-      text: "Hi Sofia — I've reviewed all 6 projects this morning. Ask me about risk, deadlines, priorities or workload and I'll break it down.",
+      text: "Welcome to Nimbus PM AI Assistant. Ask me about project risk, deadline predictions, task priorities, or team workload and I'll analyze your live workspace data.",
     },
   ]);
   const [input, setInput] = useState("");
@@ -74,21 +53,79 @@ function Assistant() {
     inputRef.current?.focus();
   }, []);
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     const value = text.trim();
     if (!value || thinking) return;
+
     setMessages((prev) => [...prev, { id: `u${Date.now()}`, role: "user", text: value }]);
     setInput("");
     setThinking(true);
-    setTimeout(() => {
-      setMessages((prev) => [...prev, { id: `a${Date.now()}`, role: "assistant", text: dummyReply(value) }]);
+
+    // Build history for backend, excluding error messages and welcome prompt
+    const history: AssistantChatMessage[] = messages
+      .filter((m) => !m.isError && m.id !== "m0" && m.text.trim().length > 0)
+      .map((m) => ({
+        role: m.role,
+        content: m.text.trim().slice(0, 4000),
+      }))
+      .slice(-20);
+
+    try {
+      const response = await askAssistant({
+        message: value,
+        history,
+      });
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a${Date.now()}`,
+          role: "assistant",
+          text: response.reply,
+        },
+      ]);
+    } catch (err: unknown) {
+      let errorText = "Failed to communicate with AI Assistant. Please try again.";
+      let errCode: string | undefined;
+
+      if (err instanceof AssistantApiError) {
+        errCode = err.code;
+        if (err.status === 503 || err.code === "CONFIG_MISSING") {
+          errorText =
+            "Configuration Required: GEMINI_API_KEY is not configured on the server. Please add your GEMINI_API_KEY to the backend .env file to enable live AI responses.";
+        } else if (err.status === 429 || err.code === "RATE_LIMIT") {
+          errorText =
+            "Rate Limit Reached: The AI provider quota or rate limit has been reached. Please wait a moment before sending another prompt.";
+        } else if (err.status === 401) {
+          errorText =
+            "Session Expired: Your authentication session is missing or expired. Please sign in again.";
+        } else if (err.status === 502) {
+          errorText = `AI Provider Error: ${err.message}`;
+        } else {
+          errorText = err.message || "An unexpected error occurred while communicating with the AI service.";
+        }
+      } else if (err instanceof Error) {
+        errorText = err.message;
+      }
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `err-${Date.now()}`,
+          role: "assistant",
+          text: errorText,
+          isError: true,
+          errorCode: errCode,
+        },
+      ]);
+    } finally {
       setThinking(false);
       inputRef.current?.focus();
-    }, 800);
+    }
   };
 
   return (
-    <AppShell title="AI Assistant" subtitle="Dummy insights — no data leaves this demo">
+    <AppShell title="AI Assistant" subtitle="AI insights grounded in your live projects and tasks">
       <Card className="flex h-[calc(100vh-13rem)] flex-col p-0">
         <div className="flex-1 space-y-5 overflow-y-auto p-5">
           {messages.map((m) => (
@@ -103,9 +140,19 @@ function Assistant() {
               )}
               <div
                 className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm ${
-                  m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted/70 text-foreground"
+                  m.role === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : m.isError
+                    ? "border border-destructive/40 bg-destructive/10 text-destructive"
+                    : "bg-muted/70 text-foreground"
                 }`}
               >
+                {m.isError && (
+                  <div className="mb-1 flex items-center gap-1.5 font-semibold text-destructive">
+                    <AlertCircle className="size-4 shrink-0" />
+                    <span>Assistant Notice</span>
+                  </div>
+                )}
                 {m.text}
               </div>
               {m.role === "user" && (
@@ -136,7 +183,8 @@ function Assistant() {
               <button
                 key={s}
                 onClick={() => send(s)}
-                className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted"
+                disabled={thinking}
+                className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted disabled:opacity-50"
               >
                 {s}
               </button>
@@ -178,3 +226,4 @@ function Assistant() {
     </AppShell>
   );
 }
+
